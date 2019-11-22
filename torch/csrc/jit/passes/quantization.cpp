@@ -174,9 +174,10 @@ bool isWeightOfConvOrLinear(Value* v) {
     if (u.user->kind() == Symbol::aten("conv2d") &&
         v == u.user->inputs().at(1)) {
       return true;
-    } else if (u.user->kind() == prim::CallFunction &&
-               getFuncName(u.user->inputs()[0]) == "linear" &&
-               v == u.user->inputs().at(2)) {
+    } else if (
+        u.user->kind() == prim::CallFunction &&
+        getFuncName(u.user->inputs()[0]) == "linear" &&
+        v == u.user->inputs().at(2)) {
       return true;
     }
   }
@@ -197,7 +198,9 @@ Node* InsertObserversHelper::insertObserverFor(
 
   script::Module observer_module;
   if (isWeightOfConvOrLinear(v)) {
-    TORCH_CHECK(v->uses().size() == 1, "We only support weight being used by one node.");
+    TORCH_CHECK(
+        v->uses().size() == 1,
+        "We only support weight being used by one node.");
     observer_module = std::get<1>(qconfig);
   } else {
     observer_module = std::get<0>(qconfig);
@@ -716,6 +719,159 @@ c10::optional<IValue> toTwoElementIntList(Value* v) {
   }
   return c10::nullopt;
 }
+
+// A helper class to make uses of module unique
+class ModuleUseDeduper {
+ public:
+  ModuleUseDeduper(script::Module& module) : module_(module) {}
+  void dedup() {
+    for (auto& method : module_.get_methods()) {
+      const auto& graph = method.graph();
+      findModuleUses(graph.get());
+    }
+    dedupModuleUses();
+  }
+
+ private:
+  // Analyze the code to record information represents
+  // uses of the module, which we'll use later to actually perform the dedup
+  // operation Please see the comments of member variables of the class for more
+  // information
+  void findModuleUses(Graph* graph) {
+    GRAPH_DUMP("Finding module uses for ", graph);
+
+    std::stack<Block*> blocks_to_visit;
+    blocks_to_visit.push(graph->block());
+    Value* self = graph->inputs()[0];
+    while (!blocks_to_visit.empty()) {
+      Block* b = blocks_to_visit.top();
+      blocks_to_visit.pop();
+      for (Node* n : b->nodes()) {
+        for (Block* subblock : n->blocks()) {
+          blocks_to_visit.push(subblock);
+        }
+        if (n->kind() != prim::CallMethod) {
+          continue;
+        }
+        std::vector<std::string> path;
+        Value* instance = n->inputs()[0];
+        // boundary_val is the value we get when we trace back
+        // the GetAttr access chain until we hit the input of graph
+        // or a node that is not prim::GetAttr
+        Value* boundary_val = getModuleAccessPath(instance, path);
+
+        if (boundary_val == self) {
+          // path.size() == 0 means we're calling a method
+          // on self, we don't need to dedup uses of self
+          if (path.size() == 0) {
+            continue;
+          }
+          value_to_path_map_[instance] = path;
+          auto m = findChildModule(module_, path);
+          // If we fail to insert the module to the unique_modules_ set,
+          // which means there are uses of this module before this point,
+          // we'll have to rewrite the use
+          if (!unique_modules_.insert(m._ivalue()).second) {
+            uses_to_rewrite_.push_back(instance);
+            GRAPH_DEBUG("Found use to rewrite: ", instance->debugName());
+          }
+        } else {
+          GRAPH_DEBUG(
+              "Can't handle the access pattern of GetAttr ",
+              "in make submodule uses unique, traced back to ",
+              boundary_val->debugName(),
+              " which is not self: ",
+              self->debugName());
+        }
+      }
+    }
+  }
+
+  // Deduplicate module uses given the information we recorded before
+  void dedupModuleUses() {
+    for (Value* v : uses_to_rewrite_) {
+      const auto& path = value_to_path_map_.at(v);
+      const auto& m = findChildModule(module_, path);
+      // add a clone of the child module to the parent of the duplicated module
+      const auto& child_name = addChildModule(module_, m, path);
+      TORCH_INTERNAL_ASSERT(v->node()->kind() == prim::GetAttr);
+      // change the name in GetAttr call
+      auto original_name = v->node()->s(attr::name);
+      v->node()->s_(attr::name, child_name);
+      GRAPH_UPDATE(
+          "Module use dedup: changing use of original module ",
+          original_name,
+          " to ",
+          child_name);
+    }
+  }
+
+  script::Module findChildModule(
+      const script::Module& module,
+      const std::vector<std::string>& path) {
+    script::Module m = module;
+    for (size_t i = 0; i < path.size(); ++i) {
+      m = m.attr(path[i]).toModule();
+    }
+    return m;
+  }
+
+  std::string addChildModule(
+      script::Module module,
+      const script::Module& child_module,
+      const std::vector<std::string>& path) {
+    TORCH_INTERNAL_ASSERT(
+        path.size() > 0, "path must have at least one element.");
+    // Parent module of the leaf child module corresponding to
+    // the path
+    auto parent_of_leaf = findChildModule(
+        module, std::vector<std::string>(path.begin(), path.end() - 1));
+
+    // Original name of the child module
+    std::string original_name = path[path.size() - 1];
+    int uid = 0;
+    std::string child_name = original_name + "_" + c10::to_string(uid++);
+    while (parent_of_leaf.hasattr(child_name)) {
+      child_name = original_name + "_" + c10::to_string(uid++);
+    }
+    parent_of_leaf.register_module(child_name, child_module.clone_instance());
+    return child_name;
+  }
+
+  // Check if value is the input of the graph
+  bool hitGraphInput(Value* value) {
+    Graph* graph = value->owningGraph();
+    const auto& inputs = graph->inputs();
+    return std::find(inputs.begin(), inputs.end(), value) != inputs.end();
+  }
+
+  Value* getModuleAccessPath(Value* instance, std::vector<std::string>& path) {
+    // Iterator to traverse back the GetAttr calls
+    Value* iter = instance;
+    // trace back the instance to recover the path of the submodule
+    while (!hitGraphInput(iter) && iter->node()->kind() == prim::GetAttr) {
+      Node* get_attr = iter->node();
+      // record the name of GetAttr
+      path.push_back(get_attr->s(attr::name));
+      // trace back the chain of GetAttr
+      iter = get_attr->inputs()[0];
+    }
+    return iter;
+  }
+
+  script::Module module_;
+  // Map from value of module instance to the list of names of submodules
+  // starting from the top level module, e.g. ["sub1", "sub2", "relu"]
+  // Also this is a cache of calling `getModuleAccessPath` of the value
+  std::unordered_map<Value*, std::vector<std::string>> value_to_path_map_;
+  // Set of unique modules that are used in the graphs
+  std::unordered_set<script::ModulePtr> unique_modules_;
+  // Values that represent the module instance(the use of the module)
+  // that we'll need to rewrite as a use of a cloned module
+  // instance
+  std::vector<Value*> uses_to_rewrite_;
+};
+
 } // namespace
 
 TORCH_API script::Module InsertObservers(
@@ -1156,9 +1312,14 @@ void FoldPrepackedWeightIntoModule(
         module, method.name(), linear_params_module, conv_params_module);
   }
   for (script::Module m : module.children()) {
-    FoldPrepackedWeightIntoModule(
-        m, linear_params_module, conv_params_module);
+    FoldPrepackedWeightIntoModule(m, linear_params_module, conv_params_module);
   }
 }
+
+void DedupModuleUses(script::Module& module) {
+  ModuleUseDeduper d(module);
+  d.dedup();
+}
+
 } // namespace jit
 } // namespace torch
