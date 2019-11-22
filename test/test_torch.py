@@ -12106,8 +12106,8 @@ class TestTorchDeviceType(TestCase):
         self.assertFalse(like.is_contiguous(memory_format=torch.channels_last))
 
         like = torch.empty_like(nhwc)
-        self.assertTrue(like.is_contiguous())
-        self.assertFalse(like.is_contiguous(memory_format=torch.channels_last))
+        self.assertFalse(like.is_contiguous())
+        self.assertTrue(like.is_contiguous(memory_format=torch.channels_last))
 
         sparse = x.to_sparse()
         with self.assertRaises(RuntimeError):
@@ -12942,7 +12942,7 @@ class TestTorchDeviceType(TestCase):
             lambda t, **kwargs: torch.empty_like(t, **kwargs)]
 
         for transformation_fn in transformation_fns:
-            self._test_memory_format_transformations(device, input_generator_fn, transformation_fn, compare_data=False)
+            self._test_memory_format_transformations(device, input_generator_fn, transformation_fn, compare_data=False, default_is_preserve=True)
 
     def test_memory_format_type_shortcuts(self, device):
         def input_generator_fn(device):
