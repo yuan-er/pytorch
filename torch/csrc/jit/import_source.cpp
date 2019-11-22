@@ -274,6 +274,7 @@ struct SourceImporterImpl : public Resolver,
     std::vector<Def> methods;
     std::vector<ResolverPtr> resolvers;
     std::vector<Assign> attributes;
+    std::vector<Assign> constants;
 
     // Module-specific: which attrs are parameters?
     std::unordered_set<std::string> parameter_names;
@@ -307,11 +308,12 @@ struct SourceImporterImpl : public Resolver,
                 // This is a regular attribute assignment, of the form:
                 //   foo : Tensor
                 if (assign.rhs().present()) {
-                  throw ErrorReport(assign.rhs())
-                      << "Unexpected right-hand found in assignment in class body. "
-                         "This is not yet supported.";
+                  // This is a constant assignemnt, of the form:
+                  // foo : Final[int] = 3
+                  constants.push_back(assign);
+                } else {
+                  attributes.push_back(assign);
                 }
-                attributes.push_back(assign);
               }
             } break;
             case TK_SUBSCRIPT: {
@@ -365,6 +367,16 @@ struct SourceImporterImpl : public Resolver,
           class_type->addAttribute(name, type, is_parameter);
         }
       }
+    }
+
+    // Populate class constants
+    for (const auto& assign : constants) {
+      TORCH_INTERNAL_ASSERT(assign.lhs().kind() == TK_VAR);
+      const auto type = assign.type().get();
+      auto rhs = assign.rhs().get();
+      auto const_val = type_parser.parseConstant(type, rhs);
+      const auto name = Var(assign.lhs()).name().name();
+      class_type->addConstant(name, const_val);
     }
 
     cu_->register_type(class_type);

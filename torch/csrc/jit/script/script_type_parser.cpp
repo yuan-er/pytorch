@@ -82,6 +82,13 @@ TypePtr ScriptTypeParser::subscriptToType(
     auto key_type = parseTypeFromExpr(subscript.subscript_exprs()[0]);
     auto value_type = parseTypeFromExpr(subscript.subscript_exprs()[1]);
     return DictType::create(key_type, value_type);
+  } else if (typeName == "Final"){
+    if (subscript.subscript_exprs().size() != 1) {
+      throw ErrorReport(subscript)
+          << " expected exactly one element type but found "
+          << subscript.subscript_exprs().size();
+    }
+    return parseTypeFromExpr(*subscript.subscript_exprs().begin());
   } else {
     throw ErrorReport(subscript.range())
         << "Unknown type constructor " << typeName;
@@ -330,6 +337,25 @@ FunctionSchema ScriptTypeParser::parseSchemaFromDef(
   std::vector<Argument> returns = parseReturnFromDecl(def.decl());
   return FunctionSchema(
       name, "", std::move(args), std::move(returns), false, false);
+}
+
+c10::IValue ScriptTypeParser::parseConstant(const Expr& final_type, const Expr& expr) {
+  TORCH_INTERNAL_ASSERT(final_type.kind() == TK_SUBSCRIPT);
+  auto subscript = Subscript(final_type);
+  auto value_name = parseBaseTypeName(subscript.value());
+  if (!value_name) {
+    throw ErrorReport(subscript.value().range())
+      << "Subscripted type must be a type identifier";
+  }
+  TORCH_INTERNAL_ASSERT(*value_name == "Final");
+  if (subscript.subscript_exprs().size() != 1) {
+    throw ErrorReport(subscript)
+      << " expected exactly one element type but found "
+      << subscript.subscript_exprs().size();
+  }
+  auto type = *subscript.subscript_exprs().begin();
+  auto default_val = evaluateDefaults(expr.range(), {type}, {expr});
+  return *default_val.begin();
 }
 
 } // namespace script
