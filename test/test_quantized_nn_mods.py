@@ -571,9 +571,9 @@ class ModuleAPITest(QuantizationTestCase):
 
         # Test serialization of quantized Conv Module using state_dict
         model_dict = qconv_module.state_dict()
-        self.assertEqual(W_q, model_dict['weight'])
+        self.assertEqual(W_q, model_dict['_packed_params.weight'])
         if use_bias:
-            self.assertEqual(b, model_dict['bias'])
+            self.assertEqual(b, model_dict['_packed_params.bias'])
         bytes_io = io.BytesIO()
         torch.save(model_dict, bytes_io)
         bytes_io.seek(0)
