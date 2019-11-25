@@ -454,20 +454,26 @@ class TestTypePromotion(TestCase):
             return 1e-3
         return 1e-5
 
-    def _test_sparse_op(self, op_name, inplace, dtype, device, coalesced):
+    def _test_sparse_op(self, op_name, inplace, dtype1, dtype2, device, coalesced):
         suffix = '_' if inplace else ''
-        err = "{} {}({}, {})".format("  coalesced" if coalesced else "uncoalesced", op_name + suffix, dtype, dtype)
+        err = "{} {}({}, {})".format("  coalesced" if coalesced else "uncoalesced", op_name + suffix, dtype1, dtype2)
 
         def op(t1, t2):
             return getattr(t1, op_name + suffix)(t2)
 
         add_sub = op_name == 'add' or op_name == 'sub'
 
-        (dense1, sparse1) = self._test_sparse_op_input_tensors(device, dtype, coalesced)
-        (dense2, sparse2) = self._test_sparse_op_input_tensors(device, dtype, coalesced, op_name != 'div')
+        (dense1, sparse1) = self._test_sparse_op_input_tensors(device, dtype1, coalesced)
+        (dense2, sparse2) = self._test_sparse_op_input_tensors(device, dtype2, coalesced, op_name != 'div')
         common_dtype = torch.result_type(dense1, dense2)
         if self.device_type == 'cpu' and common_dtype == torch.half:
             self.assertRaises(RuntimeError, lambda: op(s1, d2))
+
+        if inplace and not torch.can_cast(common_dtype, dtype1):
+            self.assertRaises(RuntimeError, lambda: op(dense1, sparse2))
+            self.assertRaises(RuntimeError, lambda: op(sparse1, sparse2))
+            self.assertRaises(RuntimeError, lambda: op(sparse1, dense2))
+            return
 
         expected = op(dense1.clone(), dense2)
         precision = self._get_precision(expected.dtype, coalesced)
@@ -501,7 +507,7 @@ class TestTypePromotion(TestCase):
         self.assertRaises(RuntimeError, lambda: op(s1, d2))
 
         # Test op(sparse, scalar)
-        if not add_sub and not (self.device_type == 'cpu' and dtype == torch.half):
+        if not add_sub and not (self.device_type == 'cpu' and dtype1 == torch.half):
             if inplace:
                 e, d1, s1, d2, s2 = [x.clone() for x in test_tensors]
             scalar = d2.view(d2.numel())[0].item()
@@ -519,10 +525,10 @@ class TestTypePromotion(TestCase):
     def test_sparse_ops(self, device):
         dtypes = torch.testing.get_all_math_dtypes(device)
         ops = ['add', 'sub', 'mul', 'div']
-        for dtype in dtypes:
+        for dtype1, dtype2 in itertools.product(dtypes, dtypes):
             for op_name in ops:
                 for inplace, coalesced in itertools.product([True, False], [True, False]):
-                    self._test_sparse_op(op_name, inplace, dtype, device, coalesced)
+                    self._test_sparse_op(op_name, inplace, dtype1, dtype2, device, coalesced)
 
 instantiate_device_type_tests(TestTypePromotion, globals())
 
