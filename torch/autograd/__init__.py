@@ -179,5 +179,17 @@ def variable(*args, **kwargs):
     warnings.warn("torch.autograd.variable(...) is deprecated, use torch.tensor(...) instead")
     return torch.tensor(*args, **kwargs)
 
+# [Experimental] Configure number of threads on each device to concurrently run autograd backward.
+# We explicitly warn user here if they would like to use this to speed up training workload.
+# User suppose to only set the number of threads before the Autograd engine create the thread pool
+def get_num_threads_per_device():
+    return Variable._execution_engine.get_num_threads_per_device()
+
+def set_num_threads_per_device(nthreads):
+    warnings.warn("setting 'num_threads per device' in autograd is currently experimental. "
+                  "It might potentially speed up your backward on CPU but you might notice "
+                  "non-determinism compare with single-thread autograd.")
+    return Variable._execution_engine.set_num_threads_per_device(nthreads)
+
 if not torch._C._autograd_init():
     raise RuntimeError("autograd initialization failed")
