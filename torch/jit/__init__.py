@@ -739,7 +739,7 @@ def trace(func,
     """
     Trace a function and return an executable  or :class:`ScriptFunction`
     that will be optimized using just-in-time compilation. Tracing is ideal for
-    code that operates only on ``Tensor``\\s and lists, dictionaries, and tuples of ``Tensor``\\s.
+    code that operates only on ``Tensor``\\s and lists, dictionaries, and tuples (or named tuples) of ``Tensor``\\s.
 
     Using ``torch.jit.trace`` and :func:`torch.jit.trace_module<torch.jit.trace_module>`, you can turn an existing module or Python
     function into a TorchScript :class:`ScriptFunction` or :class:`ScriptModule`. You must provide example inputs,
@@ -2081,17 +2081,22 @@ set_module(Error, "torch.jit")
 Error.__name__ = "Error"
 Error.__qualname__ = "Error"
 
-def _get_named_tuple_properties(obj):
+def _get_named_tuple_properties(obj, need_types=True):
     assert issubclass(obj, tuple) and hasattr(obj, '_fields')
     fields = list(obj._fields)
     annotations = []
     has_annotations = hasattr(obj, '__annotations__')
-    for field in fields:
-        if has_annotations and field in obj.__annotations__:
-            annotations.append(torch.jit.annotations.ann_to_type(obj.__annotations__[field]))
-        else:
-            annotations.append(torch._C.TensorType.get())
-    return type(obj).__name__, fields, annotations
+    obj_name = type(obj).__name__
+    if need_types:
+        for field in fields:
+            if has_annotations and field in obj.__annotations__:
+                annotations.append(torch.jit.annotations.ann_to_type(obj.__annotations__[field]))
+            else:
+                annotations.append(torch._C.TensorType.get())
+        return obj_name, fields, annotations
+    else:
+        return obj_name, fields
+
 
 def _create_named_tuple(t, unqual_name, field_names):
     TupleType = collections.namedtuple(unqual_name, field_names)
