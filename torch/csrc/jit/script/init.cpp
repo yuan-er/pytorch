@@ -633,6 +633,9 @@ void initJitScriptBindings(PyObject* module) {
           py::arg("_extra_files") = ExtraFilesMap())
       .def("_set_optimized", &Module::set_optimized)
       .def(
+          "opnames",
+          [](Module& m) {return debugMakeList(m.opnames());})
+      .def(
           "dump",
           &Module::dump,
           py::arg("code") = true,
