@@ -363,7 +363,7 @@ autograd and distributed optimizer is as follows:
 
   def run_process(self_rank, dst_rank):
       _run_process(self_rank, dst_rank)
-      rpc.wait_all_workers()
+      rpc.shutdown()
 
   processes = []
 
