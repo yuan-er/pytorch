@@ -114,10 +114,52 @@ class ModuleHolder : torch::detail::ModuleHolderIndicator {
     return impl_.get();
   }
 
+  /*
+        for hook in self._forward_pre_hooks.values():
+            result = hook(self, input)
+            if result is not None:
+                if not isinstance(result, tuple):
+                    result = (result,)
+                input = result
+  */
+
+  /*
+  template<class... OutputTypes, bool AllowDeprecatedTypes>
+  struct push_outputs<std::tuple<OutputTypes...>, AllowDeprecatedTypes> final {
+    static void call(std::tuple<OutputTypes...>&& output, Stack* stack) {
+      call_(std::move(output), stack, guts::make_index_sequence<sizeof...(OutputTypes)>());
+    }
+
+  private:
+    template<size_t... indices>
+    static void call_(std::tuple<OutputTypes...>&& output, Stack* stack, guts::index_sequence<indices...>) {
+      torch::jit::push(*stack, return_to_ivalue<OutputTypes, AllowDeprecatedTypes>(std::move(std::get<indices>(output)))...);
+    }
+  };
+  */
+
   /// Calls the `forward()` method of the contained module.
   template <typename... Args>
   auto operator()(Args&&... args)
       -> torch::detail::return_type_of_forward_t<Contained, Args...> {
+    // yf225 TODO: we need to handle the wrong type bad_any_cast case gracefully
+    // yf225 TODO: write test for each of the hook return type cases
+    // yf225 TODO: Invariants:
+    // 1. the hook should take std::tuple<InputArgs> as input, and either return void or std::tuple<InputArgs>
+    std::tuple<Args...> input = std::make_tuple(::std::forward<Args>(args)...);
+    for (const auto& any_hook : impl_->forward_pre_hooks().values()) {
+      try {  // First check if the hook returns void
+        auto hook = c10::any_cast<std::function<void(Args...)>>(any_hook);
+        hook(impl_, input);
+      } catch (const std::bad_any_cast& e) {  // Secondly, check if the hook returns a `std::tuple` of inputs
+        auto hook = c10::any_cast<std::function<std::tuple<Args...>(Args...)>>(any_hook);
+        auto result = hook(impl_, input);
+        input = result;
+      }
+    }
+
+    // yf225 TODO: how do we incorporate the tuple unpacking code into this function?
+
     // This will not compile if the module does not have a `forward()` method
     // (as expected).
     // NOTE: `std::forward` is qualified to prevent VS2017 emitting

@@ -562,6 +562,9 @@ class TORCH_API Module : public std::enable_shared_from_this<Module> {
   /// The registered (direct) submodules of this `Module`.
   OrderedDict<std::string, std::shared_ptr<Module>> children_;
 
+  /// The forward pre-hooks of this `Module`.
+  torch::autograd::hooks_dict forward_pre_hooks_;
+
   /// The module's name (e.g. "LSTM").
   mutable optional<std::string> name_;
 
